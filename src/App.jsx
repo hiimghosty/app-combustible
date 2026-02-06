@@ -2,11 +2,12 @@ import React, { useState, useMemo, useEffect } from 'react';
 import { Plus, Fuel, Gauge, Wallet, Trash2, TrendingUp, TrendingDown, Save, Download, Cloud, User } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 
-// Import the functions you need from the SDKs you need
+// --- 1. IMPORTACIONES QUE FALTABAN ---
 import { initializeApp } from "firebase/app";
-// TODO: Add SDKs for Firebase products that you want to use
-// https://firebase.google.com/docs/web/setup#available-libraries
+import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
+import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query } from 'firebase/firestore';
 
+// --- 2. TU CONFIGURACIÓN (Pega aquí tus datos reales) ---
 // Your web app's Firebase configuration
 const firebaseConfig = {
   apiKey: "AIzaSyCslpMdV2FkqO_hK-0ztFDo5GF2QzPoca8",
@@ -17,9 +18,11 @@ const firebaseConfig = {
   appId: "1:285795160334:web:2538ec94361f7ee6b5475f"
 };
 
-// Initialize Firebase
+// --- 3. INICIALIZACIÓN QUE FALTABA ---
 const app = initializeApp(firebaseConfig);
-
+const auth = getAuth(app);       // <--- Esto faltaba
+const db = getFirestore(app);    // <--- Esto faltaba
+const appId = "mi-app-combustible"; // Identificador para la base de datos
 
 const STATIONS = ['Petropar', 'Copetrol', 'Petrobras', 'Enex', 'Puma'];
 
@@ -35,13 +38,11 @@ const App = () => {
   const [cost, setCost] = useState('');
   const [station, setStation] = useState('Petropar');
 
-  // --- 1. Autenticación (Login Automático) ---
+  // --- Autenticación ---
   useEffect(() => {
     const initAuth = async () => {
       try {
-        
-        await signInAnonymously(auth);
-        
+        await signInAnonymously(auth); // Ahora 'auth' sí existe y funcionará
       } catch (error) {
         console.error("Error en autenticación:", error);
       }
@@ -54,7 +55,7 @@ const App = () => {
     return () => unsubscribe();
   }, []);
 
-  // --- 2. Sincronización de Datos (Firestore) ---
+  // --- Sincronización de Datos (Firestore) ---
   useEffect(() => {
     if (!user) return;
 
@@ -67,8 +68,7 @@ const App = () => {
           id: doc.id,
           ...doc.data()
         }));
-        // Ordenamos en memoria (Regla 2: No complex queries in Firestore)
-        // Ordenamos por odómetro para asegurar consistencia
+        // Ordenamos por odómetro
         const sortedEntries = loadedEntries.sort((a, b) => a.odometer - b.odometer);
         setEntries(sortedEntries);
         setLoading(false);
@@ -82,8 +82,7 @@ const App = () => {
     return () => unsubscribe();
   }, [user]);
 
-
-  // --- Helpers de Formato ---
+  // --- Helpers ---
   const formatPYG = (value) => {
     return new Intl.NumberFormat('es-PY', {
       style: 'currency',
@@ -104,8 +103,6 @@ const App = () => {
       minute: '2-digit'
     }).format(date);
   };
-
-  // --- Lógica del App ---
 
   const exportToCSV = () => {
     const headers = ['ID,Fecha ISO,Dia Semana,Fecha Legible,Odometro,Litros,Costo Gs,Estacion'];
@@ -140,10 +137,7 @@ const App = () => {
     };
 
     try {
-      // Guardar en Firestore
       await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'fuel_logs'), newEntry);
-      
-      // Reset UI
       setOdometer('');
       setLiters('');
       setCost('');
@@ -164,7 +158,7 @@ const App = () => {
     }
   };
 
-  // --- Estadísticas (Memoized) ---
+  // --- Estadísticas ---
   const stats = useMemo(() => {
     if (entries.length < 2) return { totalCost: 0, totalKm: 0, kmPer1000Gs: 0 };
     const sorted = [...entries].sort((a, b) => a.odometer - b.odometer);
@@ -177,7 +171,7 @@ const App = () => {
     return { totalCost, totalKm, kmPer1000Gs };
   }, [entries]);
 
-  // --- Datos Gráficos (Memoized) ---
+  // --- Datos Gráficos ---
   const chartData = useMemo(() => {
     if (entries.length === 0) return { weekly: [], monthly: [] };
     const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
