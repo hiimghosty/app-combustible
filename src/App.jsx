@@ -10,7 +10,7 @@ import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query } f
 // --- 2. TU CONFIGURACIÓN (Pega aquí tus datos reales) ---
 // Your web app's Firebase configuration
 const firebaseConfig = {
-  apiKey: "blabla",
+  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: "control-combustible-5abd4.firebaseapp.com",
   projectId: "control-combustible-5abd4",
   storageBucket: "control-combustible-5abd4.firebasestorage.app",
