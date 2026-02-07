@@ -23,3 +23,7 @@ dist-ssr
 *.sln
 *.sw?
 .env
+
+# Secrets
+.env
+src/MY_API_KEY.env
