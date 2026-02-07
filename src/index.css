@@ -2,7 +2,6 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Opcional: Para asegurar que el fondo sea claro por defecto */
 body {
-  background-color: #f8fafc;
+  background-color: #f8fafc; /* Fondo gris muy claro profesional */
 }
