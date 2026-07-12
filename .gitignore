@@ -26,4 +26,4 @@ dist-ssr
 
 # Secrets
 .env
-src/MY_API_KEY.env
+MY_API_KEY.env
