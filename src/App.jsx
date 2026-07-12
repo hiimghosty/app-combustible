@@ -1,28 +1,8 @@
 import React, { useState, useMemo, useEffect } from 'react';
-import { Plus, Fuel, Gauge, Wallet, Trash2, TrendingUp, TrendingDown, Save, Download, Cloud, User } from 'lucide-react';
+import { Plus, Fuel, Gauge, Wallet, Trash2, TrendingUp, TrendingDown, Save, Download, Cloud, User, LogOut, ShieldAlert, X, Mail, Lock } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
-
-// --- 1. IMPORTACIONES QUE FALTABAN ---
-import { initializeApp } from "firebase/app";
-import { getAuth, onAuthStateChanged, signInAnonymously } from 'firebase/auth';
-import { getFirestore, collection, addDoc, deleteDoc, doc, onSnapshot, query } from 'firebase/firestore';
-
-// --- 2. TU CONFIGURACIÓN (Pega aquí tus datos reales) ---
-// Your web app's Firebase configuration
-const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
-  authDomain: "control-combustible-5abd4.firebaseapp.com",
-  projectId: "control-combustible-5abd4",
-  storageBucket: "control-combustible-5abd4.firebasestorage.app",
-  messagingSenderId: "285795160334",
-  appId: "1:285795160334:web:2538ec94361f7ee6b5475f"
-};
-
-// --- 3. INICIALIZACIÓN QUE FALTABA ---
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);       // <--- Esto faltaba
-const db = getFirestore(app);    // <--- Esto faltaba
-const appId = "mi-app-combustible"; // Identificador para la base de datos
+import { supabase } from './supabaseClient';
+import AuthScreen from './AuthScreen';
 
 const STATIONS = ['Petropar', 'Copetrol', 'Petrobras', 'Enex', 'Puma'];
 
@@ -31,7 +11,18 @@ const App = () => {
   const [entries, setEntries] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  
+  const [selectedMonth, setSelectedMonth] = useState('');
+  const [authLoading, setAuthLoading] = useState(true);
+
+  // Estados para "proteger cuenta" (upgrade de usuario anónimo a email+contraseña)
+  const [showUpgradeForm, setShowUpgradeForm] = useState(false);
+  const [upgradeDismissed, setUpgradeDismissed] = useState(() => localStorage.getItem('fuel_upgrade_dismissed') === 'true');
+  const [upgradeEmail, setUpgradeEmail] = useState('');
+  const [upgradePassword, setUpgradePassword] = useState('');
+  const [upgradeLoading, setUpgradeLoading] = useState(false);
+  const [upgradeError, setUpgradeError] = useState(null);
+  const [upgradeMessage, setUpgradeMessage] = useState(null);
+
   // Estados del formulario
   const [odometer, setOdometer] = useState('');
   const [liters, setLiters] = useState('');
@@ -40,46 +31,77 @@ const App = () => {
 
   // --- Autenticación ---
   useEffect(() => {
-    const initAuth = async () => {
-      try {
-        await signInAnonymously(auth); // Ahora 'auth' sí existe y funcionará
-      } catch (error) {
-        console.error("Error en autenticación:", error);
-      }
+    const initSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
     };
-    initAuth();
+    initSession();
 
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      setAuthLoading(false);
     });
-    return () => unsubscribe();
+    return () => subscription.unsubscribe();
   }, []);
 
-  // --- Sincronización de Datos (Firestore) ---
+  const handleUpgrade = async (e) => {
+    e.preventDefault();
+    setUpgradeLoading(true);
+    setUpgradeError(null);
+    setUpgradeMessage(null);
+
+    const { error } = await supabase.auth.updateUser({ email: upgradeEmail, password: upgradePassword });
+    if (error) {
+      setUpgradeError(error.message);
+    } else {
+      setUpgradeMessage('Listo. Si tenés la confirmación de email activada en Supabase, revisá tu correo para completar la protección de tu cuenta.');
+    }
+    setUpgradeLoading(false);
+  };
+
+  const dismissUpgrade = () => {
+    localStorage.setItem('fuel_upgrade_dismissed', 'true');
+    setUpgradeDismissed(true);
+  };
+
+  const handleSignOut = async () => {
+    if (window.confirm('¿Cerrar sesión?')) {
+      await supabase.auth.signOut();
+    }
+  };
+
+  // --- Sincronización de Datos (Supabase) ---
   useEffect(() => {
     if (!user) return;
 
-    // Referencia a la colección privada del usuario
-    const q = query(collection(db, 'artifacts', appId, 'users', user.uid, 'fuel_logs'));
+    const fetchEntries = async () => {
+      const { data, error } = await supabase
+        .from('fuel_logs')
+        .select('*')
+        .order('odometer', { ascending: true });
 
-    const unsubscribe = onSnapshot(q, 
-      (snapshot) => {
-        const loadedEntries = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-        }));
-        // Ordenamos por odómetro
-        const sortedEntries = loadedEntries.sort((a, b) => a.odometer - b.odometer);
-        setEntries(sortedEntries);
-        setLoading(false);
-      },
-      (error) => {
+      if (error) {
         console.error("Error leyendo datos:", error);
-        setLoading(false);
+      } else {
+        setEntries(data);
       }
-    );
+      setLoading(false);
+    };
 
-    return () => unsubscribe();
+    fetchEntries();
+
+    // Suscripción en tiempo real a cambios en la tabla del usuario
+    const channel = supabase
+      .channel('fuel_logs_changes')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'fuel_logs', filter: `user_id=eq.${user.id}` },
+        () => fetchEntries()
+      )
+      .subscribe();
+
+    return () => supabase.removeChannel(channel);
   }, [user]);
 
   // --- Helpers ---
@@ -129,6 +151,7 @@ const App = () => {
     if (!odometer || !cost || !user) return;
 
     const newEntry = {
+      user_id: user.id,
       date: new Date().toISOString(),
       odometer: parseFloat(odometer),
       liters: parseFloat(liters) || 0,
@@ -136,25 +159,22 @@ const App = () => {
       station: station,
     };
 
-    try {
-      await addDoc(collection(db, 'artifacts', appId, 'users', user.uid, 'fuel_logs'), newEntry);
+    const { error } = await supabase.from('fuel_logs').insert(newEntry);
+    if (error) {
+      console.error("Error guardando:", error);
+    } else {
       setOdometer('');
       setLiters('');
       setCost('');
       setStation('Petropar');
       setShowForm(false);
-    } catch (error) {
-      console.error("Error guardando:", error);
     }
   };
 
   const handleDelete = async (id) => {
     if(window.confirm('¿Borrar este registro permanentemente?')) {
-      try {
-        await deleteDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'fuel_logs', id));
-      } catch (error) {
-        console.error("Error borrando:", error);
-      }
+      const { error } = await supabase.from('fuel_logs').delete().eq('id', id);
+      if (error) console.error("Error borrando:", error);
     }
   };
 
@@ -172,6 +192,8 @@ const App = () => {
   }, [entries]);
 
   // --- Datos Gráficos ---
+  const monthKeyOf = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
   const chartData = useMemo(() => {
     if (entries.length === 0) return { weekly: [], monthly: [] };
     const sorted = [...entries].sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -186,23 +208,77 @@ const App = () => {
       const onejan = new Date(date.getFullYear(), 0, 1);
       const weekNum = Math.ceil((((date - onejan) / 86400000) + onejan.getDay() + 1) / 7);
       const weekKey = `Sem ${weekNum}`;
-      const monthKey = date.toLocaleDateString('es-PY', { month: 'short', year: '2-digit' });
+      const monthKey = monthKeyOf(date);
+      const monthLabel = date.toLocaleDateString('es-PY', { month: 'short', year: '2-digit' });
 
       if (!weeklyMap[weekKey]) weeklyMap[weekKey] = { name: weekKey, costo: 0, km: 0 };
       weeklyMap[weekKey].costo += entry.cost;
       weeklyMap[weekKey].km += distance;
 
-      if (!monthlyMap[monthKey]) monthlyMap[monthKey] = { name: monthKey, costo: 0, km: 0 };
+      if (!monthlyMap[monthKey]) monthlyMap[monthKey] = { key: monthKey, name: monthLabel, costo: 0, km: 0, liters: 0 };
       monthlyMap[monthKey].costo += entry.cost;
       monthlyMap[monthKey].km += distance;
+      monthlyMap[monthKey].liters += entry.liters || 0;
     });
 
-    return { weekly: Object.values(weeklyMap), monthly: Object.values(monthlyMap) };
+    const monthly = Object.values(monthlyMap)
+      .sort((a, b) => a.key.localeCompare(b.key))
+      .map(m => ({ ...m, precioLitro: m.liters > 0 ? Math.round(m.costo / m.liters) : 0 }));
+
+    return { weekly: Object.values(weeklyMap), monthly };
   }, [entries]);
+
+  // --- Resumen del mes actual vs. mes anterior ---
+  const monthlyStats = useMemo(() => {
+    const now = new Date();
+    const currentKey = monthKeyOf(now);
+    const prevDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const prevKey = monthKeyOf(prevDate);
+
+    const byKey = {};
+    chartData.monthly.forEach(m => { byKey[m.key] = m; });
+
+    const current = byKey[currentKey] || { costo: 0, km: 0, liters: 0, precioLitro: 0 };
+    const previous = byKey[prevKey] || null;
+    const change = previous && previous.costo > 0
+      ? ((current.costo - previous.costo) / previous.costo) * 100
+      : null;
+
+    return { current, previous, change };
+  }, [chartData.monthly]);
+
+  // --- Filtro de historial por mes ---
+  const monthOptions = useMemo(() => {
+    const map = {};
+    entries.forEach(e => {
+      const date = new Date(e.date);
+      const key = monthKeyOf(date);
+      if (!map[key]) map[key] = date.toLocaleDateString('es-PY', { month: 'long', year: 'numeric' });
+    });
+    return Object.entries(map).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [entries]);
+
+  const filteredHistory = useMemo(() => {
+    const sorted = [...entries].sort((a, b) => new Date(b.date) - new Date(a.date));
+    if (!selectedMonth) return sorted;
+    return sorted.filter(e => monthKeyOf(new Date(e.date)) === selectedMonth);
+  }, [entries, selectedMonth]);
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center">
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-700"></div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return <AuthScreen />;
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 font-sans pb-10">
-      
+
       {/* Header */}
       <header className="bg-blue-700 text-white p-4 shadow-lg sticky top-0 z-10">
         <div className="max-w-4xl mx-auto flex justify-between items-center">
@@ -234,6 +310,89 @@ const App = () => {
           </div>
         </div>
       </header>
+
+      {/* Banner: proteger cuenta anónima */}
+      {user.is_anonymous && !upgradeDismissed && (
+        <div className="max-w-4xl mx-auto px-4 pt-4">
+          <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+            <div className="flex items-start gap-3">
+              <ShieldAlert className="h-5 w-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-amber-800">Estás usando una cuenta temporal</p>
+                <p className="text-xs text-amber-700 mt-1">
+                  Tus datos viven solo en este navegador. Si limpiás la caché o cambiás de dispositivo, los perdés. Agregá un email y contraseña para protegerlos, sin perder lo que ya cargaste.
+                </p>
+
+                {!showUpgradeForm ? (
+                  <div className="flex gap-2 mt-3">
+                    <button
+                      onClick={() => setShowUpgradeForm(true)}
+                      className="bg-amber-600 hover:bg-amber-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
+                    >
+                      Proteger mi cuenta
+                    </button>
+                    <button
+                      onClick={dismissUpgrade}
+                      className="text-amber-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-amber-100 transition-colors"
+                    >
+                      Ahora no
+                    </button>
+                  </div>
+                ) : (
+                  <form onSubmit={handleUpgrade} className="mt-3 space-y-2 max-w-xs">
+                    <div className="relative">
+                      <Mail className="absolute left-3 top-2.5 h-4 w-4 text-amber-400" />
+                      <input
+                        type="email"
+                        required
+                        value={upgradeEmail}
+                        onChange={(e) => setUpgradeEmail(e.target.value)}
+                        placeholder="tu@email.com"
+                        className="pl-9 w-full p-2 text-sm border border-amber-200 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none bg-white"
+                      />
+                    </div>
+                    <div className="relative">
+                      <Lock className="absolute left-3 top-2.5 h-4 w-4 text-amber-400" />
+                      <input
+                        type="password"
+                        required
+                        minLength={6}
+                        value={upgradePassword}
+                        onChange={(e) => setUpgradePassword(e.target.value)}
+                        placeholder="Contraseña"
+                        className="pl-9 w-full p-2 text-sm border border-amber-200 rounded-lg focus:ring-2 focus:ring-amber-500 outline-none bg-white"
+                      />
+                    </div>
+
+                    {upgradeError && <p className="text-red-600 text-xs">{upgradeError}</p>}
+                    {upgradeMessage && <p className="text-green-700 text-xs">{upgradeMessage}</p>}
+
+                    <div className="flex gap-2">
+                      <button
+                        type="submit"
+                        disabled={upgradeLoading}
+                        className="bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold px-3 py-1.5 rounded-lg transition-colors"
+                      >
+                        {upgradeLoading ? 'Guardando...' : 'Guardar'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setShowUpgradeForm(false)}
+                        className="text-amber-700 text-xs font-semibold px-3 py-1.5 rounded-lg hover:bg-amber-100 transition-colors"
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </form>
+                )}
+              </div>
+              <button onClick={dismissUpgrade} className="text-amber-400 hover:text-amber-600 shrink-0">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="max-w-4xl mx-auto p-4 space-y-6">
 
@@ -350,6 +509,35 @@ const App = () => {
         </div>
         )}
 
+        {/* Resumen del mes actual */}
+        {!loading && entries.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+            <div className="text-slate-500 text-xs font-bold uppercase mb-1">Gasto de Este Mes</div>
+            <div className="flex items-center gap-2">
+              <span className="text-xl font-bold text-slate-800">{formatPYG(monthlyStats.current.costo)}</span>
+              {monthlyStats.change !== null && (
+                <span className={`flex items-center text-xs font-bold ${monthlyStats.change > 0 ? 'text-red-500' : 'text-green-600'}`}>
+                  {monthlyStats.change > 0 ? <TrendingUp className="h-3 w-3" /> : <TrendingDown className="h-3 w-3" />}
+                  {Math.abs(monthlyStats.change).toFixed(0)}%
+                </span>
+              )}
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              {monthlyStats.previous ? `vs. ${formatPYG(monthlyStats.previous.costo)} mes anterior` : 'Sin datos del mes anterior'}
+            </div>
+          </div>
+
+          <div className="bg-white p-4 rounded-xl shadow-sm border border-slate-100">
+            <div className="text-slate-500 text-xs font-bold uppercase mb-1">Precio Promedio / Litro</div>
+            <div className="text-xl font-bold text-slate-800">
+              {monthlyStats.current.precioLitro > 0 ? formatPYG(monthlyStats.current.precioLitro) : '—'}
+            </div>
+            <div className="text-xs text-slate-400 mt-1">Este mes (según litros cargados)</div>
+          </div>
+        </div>
+        )}
+
         {/* Gráficos */}
         {!loading && entries.length > 1 && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -382,6 +570,36 @@ const App = () => {
                 </ResponsiveContainer>
               </div>
             </div>
+
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+              <h3 className="text-slate-700 font-bold mb-4 text-sm uppercase">Gasto Mensual (Gs)</h3>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={chartData.monthly}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" tick={{fontSize: 10}} />
+                    <YAxis hide />
+                    <RechartsTooltip formatter={(value) => formatPYG(value)} />
+                    <Bar dataKey="costo" fill="#f97316" radius={[4, 4, 0, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-5 rounded-xl shadow-sm border border-slate-100">
+              <h3 className="text-slate-700 font-bold mb-4 text-sm uppercase">Precio Promedio / Litro (Mensual)</h3>
+              <div className="h-48">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData.monthly.filter(m => m.precioLitro > 0)}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                    <XAxis dataKey="name" tick={{fontSize: 10}} />
+                    <YAxis hide />
+                    <RechartsTooltip formatter={(value) => formatPYG(value)} />
+                    <Line type="monotone" dataKey="precioLitro" stroke="#10b981" strokeWidth={3} dot={{r: 4}} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
         )}
 
@@ -403,9 +621,21 @@ const App = () => {
         {/* Historial */}
         {!loading && entries.length > 0 && (
         <div className="bg-white rounded-xl shadow-sm border border-slate-100 overflow-hidden">
-          <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
+          <div className="p-4 border-b border-slate-100 bg-slate-50 flex flex-wrap gap-2 justify-between items-center">
             <h3 className="font-bold text-slate-700 text-sm uppercase">Historial</h3>
-            <span className="text-xs text-slate-500">{entries.length} registros</span>
+            <div className="flex items-center gap-2">
+              <select
+                value={selectedMonth}
+                onChange={(e) => setSelectedMonth(e.target.value)}
+                className="text-xs border border-slate-200 rounded-lg px-2 py-1 bg-white text-slate-600 capitalize"
+              >
+                <option value="">Todos los meses</option>
+                {monthOptions.map(([key, label]) => (
+                  <option key={key} value={key} className="capitalize">{label}</option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">{filteredHistory.length} registros</span>
+            </div>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm text-left">
@@ -417,7 +647,7 @@ const App = () => {
                 </tr>
               </thead>
               <tbody>
-                {[...entries].sort((a, b) => new Date(b.date) - new Date(a.date)).map((entry) => (
+                {filteredHistory.map((entry) => (
                   <tr key={entry.id} className="border-b border-slate-50 hover:bg-slate-50">
                     <td className="px-4 py-3">
                       <div className="font-bold text-slate-800">{entry.station || 'Sin emblema'}</div>
@@ -444,12 +674,20 @@ const App = () => {
         <div className="text-center text-xs text-slate-400 mt-8 flex flex-col items-center gap-1">
             <div className="flex items-center gap-1">
                 <User className="h-3 w-3" />
-                <span>ID de Usuario Seguro:</span>
+                <span>{user.is_anonymous ? 'ID de Usuario Temporal:' : user.email}</span>
             </div>
-            <code className="bg-slate-100 px-2 py-1 rounded text-slate-500">
-                {user ? user.uid : 'Conectando...'}
-            </code>
+            {user.is_anonymous && (
+              <code className="bg-slate-100 px-2 py-1 rounded text-slate-500">
+                  {user.id}
+              </code>
+            )}
             <p className="mt-2 opacity-50">Tus datos están sincronizados en tiempo real.</p>
+            <button
+              onClick={handleSignOut}
+              className="flex items-center gap-1 text-slate-400 hover:text-red-500 mt-3 transition-colors"
+            >
+              <LogOut className="h-3 w-3" /> Cerrar sesión
+            </button>
         </div>
 
       </main>
